@@ -1,63 +1,86 @@
-import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HealthcareApiService } from './healthcare-api/healthcare-api.service';
-import { Patient } from './healthcare-api/dto';
+import { RiskScoringService } from './risk-scoring/risk-scoring.service';
+import { AlertManagementService } from './alert-management/alert-management.service';
+import { SubmissionService } from './submission/submission.service';
 
 @Injectable()
 export class AppService implements OnModuleInit {
-  private readonly logger = new Logger(AppService.name);
-
   constructor(
-    private readonly configService: ConfigService,
-    private readonly healthcareApiService: HealthcareApiService,
-  ) {}
+    private configService: ConfigService,
+    private healthcareApiService: HealthcareApiService,
+    private riskScoringService: RiskScoringService,
+    private alertManagementService: AlertManagementService,
+    private submissionService: SubmissionService,
+  ) {
+    console.log('Configuration Loaded');
+  }
 
   async onModuleInit() {
-    // Log environment config
-    this.logger.log('=== Environment Configuration ===');
-    this.logger.log(
-      `API Base URL: ${this.configService.get<string>('API_BASE_URL')}`,
-    );
-    this.logger.log(
-      `API Key: ${this.configService.get<string>('API_KEY') ? '✓ Loaded' : '✗ Missing'}`,
-    );
-    this.logger.log('===============================');
+    await this.runCompleteWorkflow();
+  }
 
-    // Log HTTP client config status
-    this.logger.log('=== HTTP Client Configuration ===');
-    this.logger.log(
-      `Base URL: ${this.configService.get<string>('API_BASE_URL')}`,
-    );
-    this.logger.log(
-      `API Key configured: ${this.configService.get<string>('API_KEY') ? '✓ Yes' : '✗ No'}`,
-    );
-    this.logger.log('✓ HTTP Client initialized with retry logic');
-    this.logger.log('=================================');
-
-    // Fetch all patients with pagination and logging
-    this.logger.log('=== Testing Pagination - Fetching All Patients ===');
+  async runCompleteWorkflow() {
+    console.log('Healthcare Assessment Workflow Started');
 
     try {
-      const allPatients: Patient[] =
-        await this.healthcareApiService.getAllPatients();
+      console.log('[1/4] Fetching patients...');
+      const patients = await this.healthcareApiService.getAllPatients();
+      console.log(`✓ Fetched ${patients.length} patients\n`);
 
-      this.logger.log(
-        `✅ SUCCESS: All patients fetched! Total patients: ${allPatients.length}`,
+      console.log('[2/4] Calculating risk scores...');
+      const scoredPatients = this.riskScoringService.scoreAllPatients(patients);
+      console.log(`✓ Scored ${scoredPatients.length} patients\n`);
+
+      console.log('[3/4] Generating alert lists...');
+      const alertLists = this.alertManagementService.generateAlertLists(
+        patients,
+        scoredPatients,
+      );
+      console.log(`✓ Generated alert lists`);
+      console.log(
+        `   - High-risk: ${alertLists.high_risk_patients.length} patients`,
+      );
+      console.log(`   - Fever: ${alertLists.fever_patients.length} patients`);
+      console.log(
+        `   - Data quality issues: ${alertLists.data_quality_issues.length} patients\n`,
       );
 
-      this.logger.log('--- Sample Patients (First 3) ---');
-      allPatients.slice(0, 3).forEach((patient, i) => {
-        this.logger.log(
-          `Patient ${i + 1}: ID: ${patient.patient_id} Name: ${patient.name} Age: ${patient.age} BP: ${patient.blood_pressure} Temp: ${patient.temperature}`,
+      console.log('[4/4] Submitting assessment...');
+      const result = await this.submissionService.submitAssessment(alertLists);
+
+      console.log('Assessment Complete!');
+
+      if (result.results) {
+        console.log(
+          `Score: ${result.results.score} (${result.results.percentage}%)`,
         );
-      });
-      this.logger.log('----------------------------------');
+        console.log(`Status: ${result.results.status}`);
+        console.log(`Attempt: ${result.results.attempt_number}/3`);
+
+        if (result.results.feedback.strengths.length > 0) {
+          console.log('\nStrengths:');
+          result.results.feedback.strengths.forEach((s) =>
+            console.log(`  ${s}`),
+          );
+        }
+
+        if (result.results.feedback.issues.length > 0) {
+          console.log('\nIssues:');
+          result.results.feedback.issues.forEach((i) => console.log(`  ${i}`));
+        }
+      }
+
+      return result;
     } catch (error) {
-      this.logger.error('✗ Failed to fetch all patients: ' + error.message);
+      console.error('Assessment Failed!');
+      console.error('Error:', error.message);
+      throw error;
     }
   }
 
   getHello(): string {
-    return 'Hello World!';
+    return 'Healthcare Assessment API';
   }
 }

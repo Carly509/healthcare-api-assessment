@@ -4,73 +4,52 @@ import { Patient, PatientsApiResponse } from './dto';
 
 @Injectable()
 export class HealthcareApiService {
-  constructor(private readonly httpService: HttpService) {}
+  constructor(private httpService: HttpService) {}
 
   async fetchPatientsPage(
     page: number,
     limit: number = 5,
-    retries = 3,
-    delayMs = 3000,
   ): Promise<PatientsApiResponse> {
     const axiosInstance = this.httpService.getAxiosInstance();
+    const response = await axiosInstance.get('/patients', {
+      params: { page, limit },
+    });
+    const rawData = response.data;
 
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        console.log(
-          `📄 Fetching page ${page} with limit ${limit}... (Attempt ${attempt})`,
-        );
-        console.log(`➡️ GET /patients?page=${page}&limit=${limit}`);
-
-        const response = await axiosInstance.get<PatientsApiResponse>(
-          '/patients',
-          {
-            params: { page, limit },
-          },
-        );
-
-        if (!response.data || !Array.isArray(response.data.data)) {
-          console.warn(`⚠️ Missing or invalid data on page ${page}, skipping.`);
-          return {
-            data: [],
-            pagination: {
-              page,
-              limit,
-              total: 0,
-              totalPages: 0,
-              hasNext: false,
-              hasPrevious: page > 1,
-            },
-            metadata: {
-              timestamp: new Date().toISOString(),
-              version: 'unknown',
-              requestId: 'none',
-            },
-          };
-        }
-
-        console.log(`✅ 200 GET /patients?page=${page}&limit=${limit}`);
-        console.log(
-          `✓ Page ${page} fetched: ${response.data.data.length} patients`,
-        );
-        return response.data;
-      } catch (error) {
-        if (error.response?.status === 429 && attempt < retries) {
-          console.log(
-            `⏳ Rate limit hit. Waiting ${delayMs}ms before retry #${attempt}`,
-          );
-          await new Promise((res) => setTimeout(res, delayMs));
-        } else {
-          throw error;
-        }
-      }
+    if (rawData.data && Array.isArray(rawData.data)) {
+      return rawData as PatientsApiResponse;
     }
 
-    throw new Error(`Failed to fetch page ${page} after ${retries} retries.`);
+    if (rawData.patients && Array.isArray(rawData.patients)) {
+      const convertedResponse: PatientsApiResponse = {
+        data: rawData.patients,
+        pagination: {
+          page: rawData.current_page || page,
+          limit: rawData.per_page || limit,
+          total: rawData.total_records || 0,
+          totalPages: Math.ceil(
+            (rawData.total_records || 0) / (rawData.per_page || limit),
+          ),
+          hasNext:
+            rawData.current_page <
+            Math.ceil(
+              (rawData.total_records || 0) / (rawData.per_page || limit),
+            ),
+          hasPrevious: rawData.current_page > 1,
+        },
+        metadata: {
+          timestamp: new Date().toISOString(),
+          version: 'v1.0',
+          requestId: 'converted',
+        },
+      };
+      return convertedResponse;
+    }
+
+    throw new Error(`Invalid API response structure for page ${page}`);
   }
 
   async getAllPatients(): Promise<Patient[]> {
-    console.log('=== Starting to fetch all patients ===');
-
     const allPatients: Patient[] = [];
     let currentPage = 1;
     let hasMorePages = true;
@@ -78,29 +57,33 @@ export class HealthcareApiService {
     while (hasMorePages) {
       try {
         const response = await this.fetchPatientsPage(currentPage);
+
+        if (!response.data || !Array.isArray(response.data)) {
+          throw new Error(`Invalid data format on page ${currentPage}`);
+        }
+
         allPatients.push(...response.data);
 
-        console.log(
-          `📊 Progress: ${allPatients.length}/${response.pagination.total} patients fetched`,
-        );
-
-        hasMorePages = response.pagination.hasNext;
+        hasMorePages = response.pagination?.hasNext || false;
 
         if (hasMorePages) {
           currentPage++;
-          console.log(`⏭️ Moving to page ${currentPage}...`);
-        } else {
-          console.log('✓ All pages fetched!');
+          await this.delay(500);
         }
       } catch (error) {
-        console.error(`❌ Error fetching page ${currentPage}:`, error.message);
+        if (error.response?.status === 429) {
+          const retryAfter = error.response.data?.retry_after || 5;
+          await this.delay(retryAfter * 1000);
+          continue;
+        }
         throw error;
       }
     }
 
-    console.log(`🎉 Total patients fetched: ${allPatients.length}`);
-    console.log('=====================================');
-
     return allPatients;
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

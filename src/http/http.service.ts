@@ -1,62 +1,86 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import axios, { AxiosInstance } from 'axios';
+import axios, {
+  AxiosInstance,
+  AxiosError,
+  AxiosResponse,
+  InternalAxiosRequestConfig,
+} from 'axios';
+import axiosRetry from 'axios-retry';
 
 @Injectable()
 export class HttpService {
   private readonly axiosInstance: AxiosInstance;
 
   constructor(private configService: ConfigService) {
-    const baseURL = this.configService.get<string>('API_BASE_URL');
-    const apiKey = this.configService.get<string>('API_KEY');
-
-    console.log('=== HTTP Client Configuration ===');
-    console.log('Base URL:', baseURL);
-    console.log('API Key configured:', apiKey ? '✓ Yes' : '✗ No');
+    const baseURL = this.configService.get<string>('api.baseUrl');
+    const apiKey = this.configService.get<string>('api.apiKey');
 
     this.axiosInstance = axios.create({
       baseURL,
       headers: {
-        'x-api-key': apiKey,
+        'x-api-key': apiKey ?? '',
         'Content-Type': 'application/json',
       },
-      timeout: 30000, // 30 seconds
+      timeout: 30000,
     });
 
-    // Add request interceptor for logging
+    axiosRetry(this.axiosInstance, {
+      retries: 3,
+      retryDelay: (retryCount: number, error: AxiosError) => {
+        if (error.response?.status === 429) {
+          const data = error.response.data as
+            | { retry_after?: number }
+            | undefined;
+          const retryAfter = data?.retry_after ?? 5;
+          return retryAfter * 1000;
+        }
+        return retryCount * 1000;
+      },
+      retryCondition: (error: AxiosError) => {
+        return (
+          axiosRetry.isNetworkOrIdempotentRequestError(error) ||
+          [429, 500, 503].includes(error.response?.status ?? 0)
+        );
+      },
+    });
+
     this.axiosInstance.interceptors.request.use(
-      (config) => {
-        console.log(`➡️  ${config.method?.toUpperCase()} ${config.url}`);
+      (config: InternalAxiosRequestConfig): InternalAxiosRequestConfig => {
+        console.log(`${config.method?.toUpperCase()} ${config.url}`);
         return config;
       },
-      (error) => {
-        console.error('❌ Request error:', error.message);
+      (error: AxiosError) => {
+        console.error('Request error:', error.message);
         return Promise.reject(error);
       },
     );
 
-    // Add response interceptor for logging
     this.axiosInstance.interceptors.response.use(
-      (response) => {
+      (response: AxiosResponse) => {
         console.log(
-          `✅ ${response.status} ${response.config.method?.toUpperCase()} ${response.config.url}`,
+          `${response.status} ${response.config.method?.toUpperCase()} ${response.config.url}`,
         );
+
+        if (response.data && !('data' in response.data)) {
+          console.warn('Warning: Response missing "data" property');
+          console.log('Response keys:', Object.keys(response.data));
+        }
+
         return response;
       },
-      (error) => {
+      (error: AxiosError) => {
         if (error.response) {
           console.error(
-            `❌ ${error.response.status} ${error.config?.method?.toUpperCase()} ${error.config?.url}`,
+            `${error.response.status} ${error.config?.method?.toUpperCase()} ${error.config?.url}`,
           );
+          console.error('Error response data:', error.response.data);
         } else {
-          console.error('❌ Network error:', error.message);
+          console.error('Network error:', error.message);
         }
         return Promise.reject(error);
       },
     );
-
-    console.log('✓ HTTP Client initialized');
-    console.log('=================================');
   }
 
   getAxiosInstance(): AxiosInstance {
